@@ -1,0 +1,15 @@
+if TARGET_MECHA_COMET
+
+config SYS_BOARD
+	default "comet"
+
+config SYS_VENDOR
+	default "mecha"
+
+config SYS_CONFIG_NAME
+	default "comet"
+
+config IMX_CONFIG
+	default "board/mecha/comet/imximage-8mp-lpddr4.cfg"
+
+endif

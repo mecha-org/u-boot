@@ -1,0 +1,6 @@
+Mecha Comet
+M:	Advait Dhamorikar <advaitd@mechasystems.com>
+S:	Maintained
+F:	board/mecha/comet/
+F:	include/configs/comet.h
+F:	configs/comet_defconfig
