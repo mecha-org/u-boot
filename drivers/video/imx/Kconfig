@@ -24,3 +24,11 @@ config IMX_LDB
 config IMX_LCDIF
 	bool "i.MX LCDIFv3 LCD controller"
 	depends on MACH_IMX
+
+config VIDEO_IMX_SEC_DSIM
+    bool "i.MX8M MIPI DSI (sec DSIM)"
+    depends on VIDEO && ARCH_IMX8M
+
+config VIDEO_SEC_MIPI_DSI
+    bool "i.MX8M SEC MIPI DSI"
+    depends on VIDEO && ARCH_IMX8M
