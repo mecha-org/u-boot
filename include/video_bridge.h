@@ -45,6 +45,17 @@ struct video_bridge_ops {
 	int (*check_attached)(struct udevice *dev);
 
 	/**
+	 * check_timing() - check if the timing need update after the bridge device attached
+	 *
+	 * This method is optional - if not provided then return 0
+	 *
+	 * @dev:	Device to check
+	 * @active:	The timing to be checked and updated
+	 * Return: 0 if OK, -ve on error
+	 */
+	int (*check_timing)(struct udevice *dev, struct display_timing *timing);
+
+	/**
 	 * set_backlight() - Set the backlight brightness
 	 *
 	 * @dev:	device to adjust
@@ -120,6 +131,8 @@ int video_bridge_check_attached(struct udevice *dev);
  */
 int video_bridge_get_display_timing(struct udevice *dev,
 				    struct display_timing *timing);
+
+int video_bridge_check_timing(struct udevice *dev, struct display_timing *timing);
 /**
  * video_bridge_read_edid() - Read information from EDID
  *
@@ -152,6 +165,12 @@ static inline int video_bridge_check_attached(struct udevice *dev)
 
 static inline int video_bridge_get_display_timing(struct udevice *dev,
 						  struct display_timing *timing)
+{
+	return -ENOSYS;
+}
+
+static inline int video_bridge_check_timing(struct udevice *dev, 
+							struct display_timing *timing)
 {
 	return -ENOSYS;
 }

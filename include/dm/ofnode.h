@@ -618,6 +618,12 @@ ofnode ofnode_find_subnode(ofnode node, const char *subnode_name);
  * subnode)
  */
 ofnode ofnode_find_subnode_unit(ofnode node, const char *subnode_name);
+ofnode ofnode_graph_get_remote_port_parent(ofnode endpoint);
+ofnode ofnode_graph_get_remote_node(ofnode parent, int port, int endpoint);
+ofnode ofnode_graph_get_remote_endpoint(ofnode node);
+ofnode ofnode_graph_get_port_parent(ofnode node);
+ofnode ofnode_graph_get_endpoint_by_regs(
+	const ofnode parent, int port_reg, int reg);
 
 #if CONFIG_IS_ENABLED(DM_INLINE_OFNODE)
 #include <asm/global_data.h>

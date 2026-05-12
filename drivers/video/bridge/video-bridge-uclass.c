@@ -33,17 +33,6 @@ int video_bridge_attach(struct udevice *dev)
 	return ops->attach(dev);
 }
 
-int video_bridge_get_display_timing(struct udevice *dev,
-				    struct display_timing *timings)
-{
-	struct video_bridge_ops *ops = video_bridge_get_ops(dev);
-
-	if (!ops->get_display_timing)
-		return -ENOSYS;
-
-	return ops->get_display_timing(dev, timings);
-}
-
 int video_bridge_check_attached(struct udevice *dev)
 {
 	struct video_bridge_priv *uc_priv = dev_get_uclass_priv(dev);
@@ -57,6 +46,16 @@ int video_bridge_check_attached(struct udevice *dev)
 	}
 
 	return ops->check_attached(dev);
+}
+
+int video_bridge_check_timing(struct udevice *dev, struct display_timing *timing)
+{
+	struct video_bridge_ops *ops = video_bridge_get_ops(dev);
+
+	if (ops->check_timing)
+		return ops->check_timing(dev, timing);
+
+	return 0;
 }
 
 int video_bridge_read_edid(struct udevice *dev, u8 *buf, int buf_size)
@@ -146,6 +145,7 @@ int video_bridge_set_active(struct udevice *dev, bool active)
 UCLASS_DRIVER(video_bridge) = {
 	.id		= UCLASS_VIDEO_BRIDGE,
 	.name		= "video_bridge",
+	.flags		= DM_UC_FLAG_SEQ_ALIAS,
 	.per_device_auto	= sizeof(struct video_bridge_priv),
 	.pre_probe	= video_bridge_pre_probe,
 };
