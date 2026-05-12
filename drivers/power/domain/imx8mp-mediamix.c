@@ -1,212 +1,431 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * i.MX8 MEDIAMIX control block driver
- * Copyright (C) 2024 Miquel Raynal <miquel.raynal@bootlin.com>
- * Inspired from Marek Vasut <marex@denx.de> work on the hsiomix driver.
+ * Copyright 2023 NXP
  */
 
-#include <asm/io.h>
-#include <clk.h>
 #include <dm.h>
+#include <malloc.h>
 #include <power-domain-uclass.h>
+#include <asm/io.h>
+#include <dm/device-internal.h>
+#include <dm/device.h>
+#include <dt-bindings/power/imx8mm-power.h>
+#include <dt-bindings/power/imx8mn-power.h>
+#include <dt-bindings/power/imx8mp-power.h>
+#include <clk.h>
 #include <linux/delay.h>
 
-#include <dt-bindings/power/imx8mp-power.h>
+#define BLK_SFT_RSTN	0x0
+#define BLK_CLK_EN	0x4
+#define BLK_MIPI_RESET_DIV	0x8 /* Mini/Nano/Plus DISPLAY_BLK_CTRL only */
 
-#define BLK_SFT_RSTN		0x0
-#define BLK_CLK_EN		0x4
+#define DOMAIN_MAX_CLKS 4
 
-struct imx8mp_mediamix_priv {
-	void __iomem *base;
-	struct clk clk_apb;
-	struct clk clk_axi;
-	struct clk clk_disp2;
-	struct power_domain pd_bus;
-	struct power_domain pd_lcdif2;
+struct imx8m_blk_ctrl_domain {
+	struct clk clks[DOMAIN_MAX_CLKS];
+	struct power_domain power_dev;
 };
 
-static int imx8mp_mediamix_on(struct power_domain *power_domain)
-{
-	struct udevice *dev = power_domain->dev;
-	struct imx8mp_mediamix_priv *priv = dev_get_priv(dev);
-	struct power_domain *domain;
-	struct clk *clk;
-	u32 reset;
-	int ret;
+struct imx8m_blk_ctrl {
+	void __iomem *base;
+	struct power_domain bus_power_dev;
+	struct imx8m_blk_ctrl_domain *domains;
+};
 
-	switch (power_domain->id) {
-	case IMX8MP_MEDIABLK_PD_LCDIF_2:
-		domain = &priv->pd_lcdif2;
-		clk = &priv->clk_disp2;
-		reset = BIT(11) | BIT(12) | BIT(24);
-		break;
-	default:
-		return -EINVAL;
+struct imx8m_blk_ctrl_domain_data {
+	const char *name;
+	const char * const *clk_names;
+	const char *gpc_name;
+	int num_clks;
+	u32 rst_mask;
+	u32 clk_mask;
+	u32 mipi_phy_rst_mask;
+};
+
+struct imx8m_blk_ctrl_data {
+	int max_reg;
+	const struct imx8m_blk_ctrl_domain_data *domains;
+	int num_domains;
+	u32 bus_rst_mask;
+	u32 bus_clk_mask;
+};
+
+static int imx8m_blk_ctrl_request(struct power_domain *power_domain)
+{
+	return 0;
+}
+
+static int imx8m_blk_ctrl_free(struct power_domain *power_domain)
+{
+	return 0;
+}
+
+static int imx8m_blk_ctrl_enable_domain_clk(struct udevice *dev, ulong domain_id, bool enable)
+{
+	int ret, i;
+	struct imx8m_blk_ctrl *priv = (struct imx8m_blk_ctrl *)dev_get_priv(dev);
+	struct imx8m_blk_ctrl_data *drv_data =
+		(struct imx8m_blk_ctrl_data *)dev_get_driver_data(dev);
+
+	debug("%s num_clk %u\n", __func__, drv_data->domains[domain_id].num_clks);
+
+	for (i = 0; i < drv_data->domains[domain_id].num_clks; i++) {
+		debug("%s clk %s\n", __func__, drv_data->domains[domain_id].clk_names[i]);
+		if (enable)
+			ret = clk_enable(&priv->domains[domain_id].clks[i]);
+		else
+			ret = clk_disable(&priv->domains[domain_id].clks[i]);
+		if (ret && ret != -ENOENT) {
+			printf("Failed to %s domain clk %s\n", enable ? "enable" : "disable", drv_data->domains[domain_id].clk_names[i]);
+			return ret;
+		}
 	}
 
-	/* Make sure bus domain is awake */
-	ret = power_domain_on(&priv->pd_bus);
-	if (ret)
+	return 0;
+}
+
+static int imx8m_blk_ctrl_power_on(struct power_domain *power_domain)
+{
+	struct udevice *dev = power_domain->dev;
+	struct imx8m_blk_ctrl *priv = (struct imx8m_blk_ctrl *)dev_get_priv(dev);
+	struct imx8m_blk_ctrl_data *drv_data =
+		(struct imx8m_blk_ctrl_data *)dev_get_driver_data(dev);
+	int ret;
+
+	debug("%s, id %lu\n", __func__, power_domain->id);
+
+	if (!priv->domains[power_domain->id].power_dev.dev)
+		return -ENODEV;
+
+	ret = power_domain_on(&priv->bus_power_dev);
+	if (ret < 0) {
+		printf("Failed to power up bus domain %d\n", ret);
 		return ret;
+	}
 
-	/* Put devices into reset */
-	clrbits_le32(priv->base + BLK_SFT_RSTN, reset);
+	/* Enable bus clock and deassert bus reset */
+	setbits_le32(priv->base + BLK_CLK_EN, drv_data->bus_clk_mask);
+	setbits_le32(priv->base + BLK_SFT_RSTN, drv_data->bus_rst_mask);
 
-	/* Enable upstream clocks */
-	ret = clk_enable(&priv->clk_apb);
-	if (ret)
-		goto dis_bus_pd;
-
-	ret = clk_enable(&priv->clk_axi);
-	if (ret)
-		goto dis_apb_clk;
-
-	/* Enable blk-ctrl clock to allow reset to propagate */
-	ret = clk_enable(clk);
-	if (ret)
-		goto dis_axi_clk;
-	setbits_le32(priv->base + BLK_CLK_EN, reset);
-
-	/* Power up upstream GPC domain */
-	ret = power_domain_on(domain);
-	if (ret)
-		goto dis_lcdif_clk;
-
-	/* Wait for reset to propagate */
+	/* wait for reset to propagate */
 	udelay(5);
 
-	/* Release reset */
-	setbits_le32(priv->base + BLK_SFT_RSTN, reset);
+	/* put devices into reset */
+	clrbits_le32(priv->base + BLK_SFT_RSTN, drv_data->domains[power_domain->id].rst_mask);
+	if (drv_data->domains[power_domain->id].mipi_phy_rst_mask)
+		clrbits_le32(priv->base + BLK_MIPI_RESET_DIV, drv_data->domains[power_domain->id].mipi_phy_rst_mask);
 
-	return 0;
-
-dis_lcdif_clk:
-	clk_disable(clk);
-dis_axi_clk:
-	clk_disable(&priv->clk_axi);
-dis_apb_clk:
-	clk_disable(&priv->clk_apb);
-dis_bus_pd:
-	power_domain_off(&priv->pd_bus);
-
-	return ret;
-}
-
-static int imx8mp_mediamix_off(struct power_domain *power_domain)
-{
-	struct udevice *dev = power_domain->dev;
-	struct imx8mp_mediamix_priv *priv = dev_get_priv(dev);
-	struct power_domain *domain;
-	struct clk *clk;
-	u32 reset;
-
-	switch (power_domain->id) {
-	case IMX8MP_MEDIABLK_PD_LCDIF_2:
-		domain = &priv->pd_lcdif2;
-		clk = &priv->clk_disp2;
-		reset = BIT(11) | BIT(12) | BIT(24);
-		break;
-	default:
-		return -EINVAL;
+	/* enable upstream and blk-ctrl clocks to allow reset to propagate */
+	ret = imx8m_blk_ctrl_enable_domain_clk(dev, power_domain->id, true);
+	if (ret) {
+		printf("failed to enable clocks\n");
+		goto bus_powerdown;
 	}
 
-	/* Put devices into reset and disable clocks */
-	clrbits_le32(priv->base + BLK_SFT_RSTN, reset);
-	clrbits_le32(priv->base + BLK_CLK_EN, reset);
+	/* ungate clk */
+	setbits_le32(priv->base + BLK_CLK_EN, drv_data->domains[power_domain->id].clk_mask);
 
-	/* Power down upstream GPC domain */
-	power_domain_off(domain);
+	/* power up upstream GPC domain */
+	ret = power_domain_on(&priv->domains[power_domain->id].power_dev);
+	if (ret < 0) {
+		printf("Failed to power up peripheral domain %d\n", ret);
+		goto clk_disable;
+	}
 
-	clk_disable(clk);
-	clk_disable(&priv->clk_axi);
-	clk_disable(&priv->clk_apb);
+	/* wait for reset to propagate */
+	udelay(5);
 
-	/* Allow bus domain to suspend */
-	power_domain_off(&priv->pd_bus);
-
-	return 0;
-}
-
-static int imx8mp_mediamix_of_xlate(struct power_domain *power_domain,
-				    struct ofnode_phandle_args *args)
-{
-	power_domain->id = args->args[0];
+	/* release reset */
+	setbits_le32(priv->base + BLK_SFT_RSTN, drv_data->domains[power_domain->id].rst_mask);
+	if (drv_data->domains[power_domain->id].mipi_phy_rst_mask)
+		setbits_le32(priv->base + BLK_MIPI_RESET_DIV, drv_data->domains[power_domain->id].mipi_phy_rst_mask);
 
 	return 0;
-}
-
-static int imx8mp_mediamix_bind(struct udevice *dev)
-{
-	/* Bind child lcdif */
-	return dm_scan_fdt_dev(dev);
-}
-
-static int imx8mp_mediamix_probe(struct udevice *dev)
-{
-	struct power_domain_plat *plat = dev_get_uclass_plat(dev);
-	struct imx8mp_mediamix_priv *priv = dev_get_priv(dev);
-	int ret;
-
-	/* Definitions are in imx8mp-power.h */
-	plat->subdomains = 9;
-
-	priv->base = dev_read_addr_ptr(dev);
-
-	ret = clk_get_by_name(dev, "apb", &priv->clk_apb);
-	if (ret < 0)
-		return ret;
-
-	ret = clk_get_by_name(dev, "axi", &priv->clk_axi);
-	if (ret < 0)
-		return ret;
-
-	ret = clk_get_by_name(dev, "disp2", &priv->clk_disp2);
-	if (ret < 0)
-		return ret;
-
-	ret = power_domain_get_by_name(dev, &priv->pd_bus, "bus");
-	if (ret < 0)
-		return ret;
-
-	ret = power_domain_get_by_name(dev, &priv->pd_lcdif2, "lcdif2");
-	if (ret < 0)
-		goto free_bus_pd;
-
-	return 0;
-
-free_bus_pd:
-	power_domain_free(&priv->pd_bus);
+clk_disable:
+	imx8m_blk_ctrl_enable_domain_clk(dev, power_domain->id, false);
+bus_powerdown:
+	power_domain_off(&priv->bus_power_dev);
 	return ret;
 }
 
-static int imx8mp_mediamix_remove(struct udevice *dev)
+static int imx8m_blk_ctrl_power_off(struct power_domain *power_domain)
 {
-	struct imx8mp_mediamix_priv *priv = dev_get_priv(dev);
+	struct udevice *dev = power_domain->dev;
+	struct imx8m_blk_ctrl *priv = (struct imx8m_blk_ctrl *)dev_get_priv(dev);
+	struct imx8m_blk_ctrl_data *drv_data =
+		(struct imx8m_blk_ctrl_data *)dev_get_driver_data(dev);
 
-	power_domain_free(&priv->pd_lcdif2);
-	power_domain_free(&priv->pd_bus);
+	debug("%s, id %lu\n", __func__, power_domain->id);
+
+	if (!priv->domains[power_domain->id].power_dev.dev)
+		return -ENODEV;
+
+	/* put devices into reset and disable clocks */
+	if (drv_data->domains[power_domain->id].mipi_phy_rst_mask)
+		clrbits_le32(priv->base + BLK_MIPI_RESET_DIV, drv_data->domains[power_domain->id].mipi_phy_rst_mask);
+
+	/* assert reset */
+	clrbits_le32(priv->base + BLK_SFT_RSTN, drv_data->domains[power_domain->id].rst_mask);
+
+	/* gate clk */
+	clrbits_le32(priv->base + BLK_CLK_EN, drv_data->domains[power_domain->id].clk_mask);
+
+	/* power down upstream GPC domain */
+	power_domain_off(&priv->domains[power_domain->id].power_dev);
+
+	imx8m_blk_ctrl_enable_domain_clk(dev, power_domain->id, false);
+
+	/* power down bus domain */
+	power_domain_off(&priv->bus_power_dev);
 
 	return 0;
 }
 
-static const struct udevice_id imx8mp_mediamix_ids[] = {
-	{ .compatible = "fsl,imx8mp-media-blk-ctrl" },
+static int imx8m_blk_ctrl_probe(struct udevice *dev)
+{
+	int ret, i, j;
+	struct imx8m_blk_ctrl *priv = (struct imx8m_blk_ctrl *)dev_get_priv(dev);
+	struct imx8m_blk_ctrl_data *drv_data =
+		(struct imx8m_blk_ctrl_data *)dev_get_driver_data(dev);
+
+	priv->base = dev_read_addr_ptr(dev);
+	if (!priv->base)
+		return -EINVAL;
+
+	priv->domains = kcalloc(drv_data->num_domains, sizeof(struct imx8m_blk_ctrl_domain), GFP_KERNEL);
+
+	ret = power_domain_get_by_name(dev, &priv->bus_power_dev, "bus");
+	if (ret) {
+		printf("Failed to power_domain_get_by_name %s\n", "bus");
+		return ret;
+	}
+
+	for (j = 0; j < drv_data->num_domains; j++) {
+		ret = power_domain_get_by_name(dev, &priv->domains[j].power_dev, drv_data->domains[j].gpc_name);
+		if (ret)
+			continue;
+
+		for (i = 0; i < drv_data->domains[j].num_clks; i++) {
+			ret = clk_get_by_name(dev, drv_data->domains[j].clk_names[i], &priv->domains[j].clks[i]);
+			if (ret) {
+				printf("Failed to get clk %s\n", drv_data->domains[j].clk_names[i]);
+				return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int imx8m_blk_ctrl_remove(struct udevice *dev)
+{
+	struct imx8m_blk_ctrl *priv = (struct imx8m_blk_ctrl *)dev_get_priv(dev);
+
+	kfree(priv->domains);
+
+	return 0;
+}
+
+static const struct imx8m_blk_ctrl_domain_data imx8mm_disp_blk_ctl_domain_data[] = {
+	[IMX8MM_DISPBLK_PD_CSI_BRIDGE] = {
+		.name = "dispblk-csi-bridge",
+		.clk_names = (const char *[]){ "csi-bridge-axi", "csi-bridge-apb",
+					       "csi-bridge-core", },
+		.num_clks = 3,
+		.gpc_name = "csi-bridge",
+		.rst_mask = BIT(0) | BIT(1) | BIT(2),
+		.clk_mask = BIT(0) | BIT(1) | BIT(2) | BIT(3) | BIT(4) | BIT(5),
+	},
+	[IMX8MM_DISPBLK_PD_LCDIF] = {
+		.name = "dispblk-lcdif",
+		.clk_names = (const char *[]){ "lcdif-axi", "lcdif-apb", "lcdif-pix", },
+		.num_clks = 3,
+		.gpc_name = "lcdif",
+		.clk_mask = BIT(6) | BIT(7),
+	},
+	[IMX8MM_DISPBLK_PD_MIPI_DSI] = {
+		.name = "dispblk-mipi-dsi",
+		.clk_names = (const char *[]){ "dsi-pclk", "dsi-ref", },
+		.num_clks = 2,
+		.gpc_name = "mipi-dsi",
+		.rst_mask = BIT(5),
+		.clk_mask = BIT(8) | BIT(9),
+		.mipi_phy_rst_mask = BIT(17),
+	},
+	[IMX8MM_DISPBLK_PD_MIPI_CSI] = {
+		.name = "dispblk-mipi-csi",
+		.clk_names = (const char *[]){ "csi-aclk", "csi-pclk" },
+		.num_clks = 2,
+		.gpc_name = "mipi-csi",
+		.rst_mask = BIT(3) | BIT(4),
+		.clk_mask = BIT(10) | BIT(11),
+		.mipi_phy_rst_mask = BIT(16),
+	},
+};
+
+static const struct imx8m_blk_ctrl_data imx8mm_disp_blk_ctl_dev_data = {
+	.max_reg = 0x2c,
+	.domains = imx8mm_disp_blk_ctl_domain_data,
+	.num_domains = ARRAY_SIZE(imx8mm_disp_blk_ctl_domain_data),
+	.bus_rst_mask = BIT(6),
+	.bus_clk_mask = BIT(12),
+};
+
+static const struct imx8m_blk_ctrl_domain_data imx8mn_disp_blk_ctl_domain_data[] = {
+	[IMX8MN_DISPBLK_PD_MIPI_DSI] = {
+		.name = "dispblk-mipi-dsi",
+		.clk_names = (const char *[]){ "dsi-pclk", "dsi-ref", },
+		.num_clks = 2,
+		.gpc_name = "mipi-dsi",
+		.rst_mask = BIT(0) | BIT(1),
+		.clk_mask = BIT(0) | BIT(1),
+		.mipi_phy_rst_mask = BIT(17),
+	},
+	[IMX8MN_DISPBLK_PD_MIPI_CSI] = {
+		.name = "dispblk-mipi-csi",
+		.clk_names = (const char *[]){ "csi-aclk", "csi-pclk" },
+		.num_clks = 2,
+		.gpc_name = "mipi-csi",
+		.rst_mask = BIT(2) | BIT(3),
+		.clk_mask = BIT(2) | BIT(3),
+		.mipi_phy_rst_mask = BIT(16),
+	},
+	[IMX8MN_DISPBLK_PD_LCDIF] = {
+		.name = "dispblk-lcdif",
+		.clk_names = (const char *[]){ "lcdif-axi", "lcdif-apb", "lcdif-pix", },
+		.num_clks = 3,
+		.gpc_name = "lcdif",
+		.rst_mask = BIT(4) | BIT(5),
+		.clk_mask = BIT(4) | BIT(5),
+	},
+	[IMX8MN_DISPBLK_PD_ISI] = {
+		.name = "dispblk-isi",
+		.clk_names = (const char *[]){ "disp_axi", "disp_apb", "disp_axi_root",
+						"disp_apb_root"},
+		.num_clks = 4,
+		.gpc_name = "isi",
+		.rst_mask = BIT(6) | BIT(7),
+		.clk_mask = BIT(6) | BIT(7),
+	},
+};
+
+static const struct imx8m_blk_ctrl_data imx8mn_disp_blk_ctl_dev_data = {
+	.max_reg = 0x84,
+	.domains = imx8mn_disp_blk_ctl_domain_data,
+	.num_domains = ARRAY_SIZE(imx8mn_disp_blk_ctl_domain_data),
+	.bus_rst_mask = BIT(8),
+	.bus_clk_mask = BIT(8),
+};
+
+static const struct imx8m_blk_ctrl_domain_data imx8mp_media_blk_ctl_domain_data[] = {
+	[IMX8MP_MEDIABLK_PD_MIPI_DSI_1] = {
+		.name = "mediablk-mipi-dsi-1",
+		.clk_names = (const char *[]){ "apb", "phy", },
+		.num_clks = 2,
+		.gpc_name = "mipi-dsi1",
+		.rst_mask = BIT(0) | BIT(1),
+		.clk_mask = BIT(0) | BIT(1),
+		.mipi_phy_rst_mask = BIT(17),
+	},
+	[IMX8MP_MEDIABLK_PD_MIPI_CSI2_1] = {
+		.name = "mediablk-mipi-csi2-1",
+		.clk_names = (const char *[]){ "apb", "cam1" },
+		.num_clks = 2,
+		.gpc_name = "mipi-csi1",
+		.rst_mask = BIT(2) | BIT(3),
+		.clk_mask = BIT(2) | BIT(3),
+		.mipi_phy_rst_mask = BIT(16),
+	},
+	[IMX8MP_MEDIABLK_PD_LCDIF_1] = {
+		.name = "mediablk-lcdif-1",
+		.clk_names = (const char *[]){ "disp1", "apb", "axi", },
+		.num_clks = 3,
+		.gpc_name = "lcdif1",
+		.rst_mask = BIT(4) | BIT(5) | BIT(23),
+		.clk_mask = BIT(4) | BIT(5) | BIT(23),
+	},
+	[IMX8MP_MEDIABLK_PD_ISI] = {
+		.name = "mediablk-isi",
+		.clk_names = (const char *[]){ "axi", "apb" },
+		.num_clks = 2,
+		.gpc_name = "isi",
+		.rst_mask = BIT(6) | BIT(7),
+		.clk_mask = BIT(6) | BIT(7),
+	},
+	[IMX8MP_MEDIABLK_PD_MIPI_CSI2_2] = {
+		.name = "mediablk-mipi-csi2-2",
+		.clk_names = (const char *[]){ "apb", "cam2" },
+		.num_clks = 2,
+		.gpc_name = "mipi-csi2",
+		.rst_mask = BIT(9) | BIT(10),
+		.clk_mask = BIT(9) | BIT(10),
+		.mipi_phy_rst_mask = BIT(30),
+	},
+	[IMX8MP_MEDIABLK_PD_LCDIF_2] = {
+		.name = "mediablk-lcdif-2",
+		.clk_names = (const char *[]){ "disp2", "apb", "axi", },
+		.num_clks = 3,
+		.gpc_name = "lcdif2",
+		.rst_mask = BIT(11) | BIT(12) | BIT(24),
+		.clk_mask = BIT(11) | BIT(12) | BIT(24),
+	},
+	[IMX8MP_MEDIABLK_PD_ISP] = {
+		.name = "mediablk-isp",
+		.clk_names = (const char *[]){ "isp", "axi", "apb" },
+		.num_clks = 3,
+		.gpc_name = "isp",
+		.rst_mask = BIT(16) | BIT(17) | BIT(18),
+		.clk_mask = BIT(16) | BIT(17) | BIT(18),
+	},
+	[IMX8MP_MEDIABLK_PD_DWE] = {
+		.name = "mediablk-dwe",
+		.clk_names = (const char *[]){ "axi", "apb" },
+		.num_clks = 2,
+		.gpc_name = "dwe",
+		.rst_mask = BIT(19) | BIT(20) | BIT(21),
+		.clk_mask = BIT(19) | BIT(20) | BIT(21),
+	},
+	[IMX8MP_MEDIABLK_PD_MIPI_DSI_2] = {
+		.name = "mediablk-mipi-dsi-2",
+		.clk_names = (const char *[]){ "phy", },
+		.num_clks = 1,
+		.gpc_name = "mipi-dsi2",
+		.rst_mask = BIT(22),
+		.clk_mask = BIT(22),
+		.mipi_phy_rst_mask = BIT(29),
+	},
+};
+
+static const struct imx8m_blk_ctrl_data imx8mp_media_blk_ctl_dev_data = {
+	.max_reg = 0x138,
+	.domains = imx8mp_media_blk_ctl_domain_data,
+	.num_domains = ARRAY_SIZE(imx8mp_media_blk_ctl_domain_data),
+	.bus_rst_mask = BIT(8),
+	.bus_clk_mask = BIT(8),
+};
+
+static const struct udevice_id imx8m_blk_ctrl_ids[] = {
+	{ .compatible = "fsl,imx8mm-disp-blk-ctrl", .data = (ulong)&imx8mm_disp_blk_ctl_dev_data },
+	{ .compatible = "fsl,imx8mn-disp-blk-ctrl", .data = (ulong)&imx8mn_disp_blk_ctl_dev_data },
+	{ .compatible = "fsl,imx8mp-media-blk-ctrl", .data = (ulong)&imx8mp_media_blk_ctl_dev_data },
 	{ }
 };
 
-struct power_domain_ops imx8mp_mediamix_ops = {
-	.on = imx8mp_mediamix_on,
-	.off = imx8mp_mediamix_off,
-	.of_xlate = imx8mp_mediamix_of_xlate,
+struct power_domain_ops imx8m_blk_ctrl_ops = {
+	.request = imx8m_blk_ctrl_request,
+	.rfree = imx8m_blk_ctrl_free,
+	.on = imx8m_blk_ctrl_power_on,
+	.off = imx8m_blk_ctrl_power_off,
 };
 
-U_BOOT_DRIVER(imx8mp_mediamix) = {
-	.name		= "imx8mp_mediamix",
-	.id		= UCLASS_POWER_DOMAIN,
-	.of_match	= imx8mp_mediamix_ids,
-	.bind		= imx8mp_mediamix_bind,
-	.probe		= imx8mp_mediamix_probe,
-	.remove		= imx8mp_mediamix_remove,
-	.priv_auto	= sizeof(struct imx8mp_mediamix_priv),
-	.ops		= &imx8mp_mediamix_ops,
+U_BOOT_DRIVER(imx8m_blk_ctrl) = {
+	.name = "imx8m_blk_ctrl",
+	.id = UCLASS_POWER_DOMAIN,
+	.of_match = imx8m_blk_ctrl_ids,
+	.bind = dm_scan_fdt_dev,
+	.probe = imx8m_blk_ctrl_probe,
+	.remove = imx8m_blk_ctrl_remove,
+	.priv_auto	= sizeof(struct imx8m_blk_ctrl),
+	.ops = &imx8m_blk_ctrl_ops,
+	.flags  = DM_FLAG_DEFAULT_PD_CTRL_OFF,
 };

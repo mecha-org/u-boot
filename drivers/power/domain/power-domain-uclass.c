@@ -10,11 +10,7 @@
 #include <malloc.h>
 #include <power-domain.h>
 #include <power-domain-uclass.h>
-#include <dm/device-internal.h>
-
-struct power_domain_priv {
-	int *on_count;
-};
+#include <dm/uclass-internal.h>
 
 static inline struct power_domain_ops *power_domain_dev_ops(struct udevice *dev)
 {
@@ -34,6 +30,49 @@ static int power_domain_of_xlate_default(struct power_domain *power_domain,
 	power_domain->id = args->args[0];
 
 	return 0;
+}
+
+int power_domain_lookup_name(const char *name, struct power_domain *power_domain)
+{
+	struct udevice *dev;
+	struct power_domain_ops *ops;
+	int ret;
+
+	debug("%s(power_domain=%p name=%s)\n", __func__, power_domain, name);
+
+	ret = uclass_find_device_by_name(UCLASS_POWER_DOMAIN, name, &dev);
+	if (!ret) {
+		/* Probe the dev */
+		ret = device_probe(dev);
+		if (ret) {
+			printf("Power domain probe device %s failed: %d\n", name, ret);
+			return ret;
+		}
+		ops = power_domain_dev_ops(dev);
+
+		power_domain->dev = dev;
+		if (ops->of_xlate)
+			ret = ops->of_xlate(power_domain, NULL);
+		else
+			ret = power_domain_of_xlate_default(power_domain, NULL);
+		if (ret) {
+			debug("of_xlate() failed: %d\n", ret);
+			return ret;
+		}
+
+		ret = ops->request ? ops->request(power_domain) : 0;
+		if (ret) {
+			debug("ops->request() failed: %d\n", ret);
+			return ret;
+		}
+
+		debug("%s ok: %s\n", __func__, dev->name);
+
+		return 0;
+	}
+
+	printf("%s fail: %s, ret = %d\n", __func__, name, ret);
+	return -EINVAL;
 }
 
 int power_domain_get_by_index(struct udevice *dev,
@@ -111,67 +150,22 @@ int power_domain_free(struct power_domain *power_domain)
 	return ops->rfree ? ops->rfree(power_domain) : 0;
 }
 
-int power_domain_on_lowlevel(struct power_domain *power_domain)
+int power_domain_on(struct power_domain *power_domain)
 {
-	struct power_domain_priv *priv = dev_get_uclass_priv(power_domain->dev);
-	struct power_domain_plat *plat = dev_get_uclass_plat(power_domain->dev);
 	struct power_domain_ops *ops = power_domain_dev_ops(power_domain->dev);
-	int *on_count = plat->subdomains ? &priv->on_count[power_domain->id] : NULL;
-	int ret;
 
-	/* Refcounting is not enabled on all drivers by default */
-	if (on_count) {
-		debug("Enable power domain %s.%ld: %d -> %d (%s)\n",
-		      power_domain->dev->name, power_domain->id, *on_count, *on_count + 1,
-		      (((*on_count + 1) > 1) ? "EALREADY" : "todo"));
+	debug("%s(power_domain=%p)\n", __func__, power_domain);
 
-		(*on_count)++;
-		if (*on_count > 1)
-			return -EALREADY;
-	}
-
-	ret = ops->on ? ops->on(power_domain) : 0;
-	if (ret) {
-		if (on_count)
-			(*on_count)--;
-		return ret;
-	}
-
-	return 0;
+	return ops->on ? ops->on(power_domain) : 0;
 }
 
-int power_domain_off_lowlevel(struct power_domain *power_domain)
+int power_domain_off(struct power_domain *power_domain)
 {
-	struct power_domain_priv *priv = dev_get_uclass_priv(power_domain->dev);
-	struct power_domain_plat *plat = dev_get_uclass_plat(power_domain->dev);
 	struct power_domain_ops *ops = power_domain_dev_ops(power_domain->dev);
-	int *on_count = plat->subdomains ? &priv->on_count[power_domain->id] : NULL;
-	int ret;
 
-	/* Refcounting is not enabled on all drivers by default */
-	if (on_count) {
-		debug("Disable power domain %s.%ld: %d -> %d (%s%s)\n",
-		      power_domain->dev->name, power_domain->id, *on_count, *on_count - 1,
-		      (((*on_count) <= 0) ? "EALREADY" : ""),
-		      (((*on_count - 1) > 0) ? "BUSY" : "todo"));
+	debug("%s(power_domain=%p)\n", __func__, power_domain);
 
-		if (*on_count <= 0)
-			return -EALREADY;
-
-		(*on_count)--;
-		if (*on_count > 0)
-			return -EBUSY;
-	}
-
-	ret = ops->off ? ops->off(power_domain) : 0;
-	if (ret) {
-		if (on_count)
-			(*on_count)++;
-
-		return ret;
-	}
-
-	return 0;
+	return ops->off ? ops->off(power_domain) : 0;
 }
 
 #if CONFIG_IS_ENABLED(OF_REAL)
@@ -179,9 +173,6 @@ static int dev_power_domain_ctrl(struct udevice *dev, bool on)
 {
 	struct power_domain pd;
 	int i, count, ret = 0;
-
-	if (!dev_has_ofnode(dev))
-		return 0;
 
 	count = dev_count_phandle_with_args(dev, "power-domains",
 					    "#power-domain-cells", 0);
@@ -193,27 +184,16 @@ static int dev_power_domain_ctrl(struct udevice *dev, bool on)
 			ret = power_domain_on(&pd);
 		else
 			ret = power_domain_off(&pd);
+
+		if (ret)
+			return ret;
+
+		if (count > 0 && !on && dev_get_parent(dev) == pd.dev)
+			return ret;
+
+		if (count > 0 && !on)
+			device_remove(pd.dev, DM_REMOVE_NORMAL);
 	}
-
-	/*
-	 * For platforms with parent and child power-domain devices
-	 * we may not run device_remove() on the power-domain parent
-	 * because it will result in removing its children and switching
-	 * off their power-domain parent. So we will get here again and
-	 * again and will be stuck in an endless loop.
-	 */
-	if (count > 0 && !on && dev_get_parent(dev) == pd.dev &&
-	    device_get_uclass_id(dev) == UCLASS_POWER_DOMAIN)
-		return ret;
-
-	/*
-	 * power_domain_get() bound the device, thus
-	 * we must remove it again to prevent unbinding
-	 * active devices (which would result in unbind
-	 * error).
-	 */
-	if (count > 0 && !on)
-		device_remove(pd.dev, DM_REMOVE_NORMAL);
 
 	return ret;
 }
@@ -229,36 +209,7 @@ int dev_power_domain_off(struct udevice *dev)
 }
 #endif  /* OF_REAL */
 
-static int power_domain_post_probe(struct udevice *dev)
-{
-	struct power_domain_priv *priv = dev_get_uclass_priv(dev);
-	struct power_domain_plat *plat = dev_get_uclass_plat(dev);
-
-	if (plat->subdomains) {
-		priv->on_count = calloc(sizeof(int), plat->subdomains);
-		if (!priv->on_count)
-			return -ENOMEM;
-	}
-
-	return 0;
-}
-
-static int power_domain_pre_remove(struct udevice *dev)
-{
-	struct power_domain_priv *priv = dev_get_uclass_priv(dev);
-	struct power_domain_plat *plat = dev_get_uclass_plat(dev);
-
-	if (plat->subdomains)
-		free(priv->on_count);
-
-	return 0;
-}
-
 UCLASS_DRIVER(power_domain) = {
 	.id		= UCLASS_POWER_DOMAIN,
 	.name		= "power_domain",
-	.post_probe	= power_domain_post_probe,
-	.pre_remove	= power_domain_pre_remove,
-	.per_device_auto = sizeof(struct power_domain_priv),
-	.per_device_plat_auto = sizeof(struct power_domain_plat),
 };

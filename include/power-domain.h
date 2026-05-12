@@ -157,12 +157,6 @@ static inline int power_domain_free(struct power_domain *power_domain)
 
 /**
  * power_domain_on_lowlevel - Enable power to a power domain (with refcounting)
- *
- * @power_domain:	A power domain struct that was previously successfully
- *		requested by power_domain_get().
- * Return: 0 if the transition has been performed correctly,
- *         -EALREADY if the domain is already on,
- *         a negative error code otherwise.
  */
 #if CONFIG_IS_ENABLED(POWER_DOMAIN)
 int power_domain_on_lowlevel(struct power_domain *power_domain);
@@ -173,14 +167,16 @@ static inline int power_domain_on_lowlevel(struct power_domain *power_domain)
 }
 #endif
 
+
 /**
- * power_domain_on - Enable power to a power domain (ignores the actual state
- *		      of the power domain)
- *
- * @power_domain:	A power domain struct that was previously successfully
- *		requested by power_domain_get().
- * Return: a negative error code upon error during the transition, 0 otherwise.
+ * power_domain_on - Enable power to a power domain
  */
+#if CONFIG_IS_ENABLED(POWER_DOMAIN)
+
+int power_domain_on(struct power_domain *power_domain);
+
+#else
+
 static inline int power_domain_on(struct power_domain *power_domain)
 {
 	int ret;
@@ -192,16 +188,11 @@ static inline int power_domain_on(struct power_domain *power_domain)
 	return ret;
 }
 
+#endif
+
+
 /**
  * power_domain_off_lowlevel - Disable power to a power domain (with refcounting)
- *
- * @power_domain:	A power domain struct that was previously successfully
- *		requested by power_domain_get().
- * Return: 0 if the transition has been performed correctly,
- *         -EALREADY if the domain is already off,
- *         -EBUSY if another device is keeping the domain on (but the refcounter
- *         is decremented),
- *         a negative error code otherwise.
  */
 #if CONFIG_IS_ENABLED(POWER_DOMAIN)
 int power_domain_off_lowlevel(struct power_domain *power_domain);
@@ -212,14 +203,16 @@ static inline int power_domain_off_lowlevel(struct power_domain *power_domain)
 }
 #endif
 
+
 /**
- * power_domain_off - Disable power to a power domain (ignores the actual state
- *		      of the power domain)
- *
- * @power_domain:	A power domain struct that was previously successfully
- *		requested by power_domain_get().
- * Return: a negative error code upon error during the transition, 0 otherwise.
+ * power_domain_off - Disable power to a power domain
  */
+#if CONFIG_IS_ENABLED(POWER_DOMAIN)
+
+int power_domain_off(struct power_domain *power_domain);
+
+#else
+
 static inline int power_domain_off(struct power_domain *power_domain)
 {
 	int ret;
@@ -230,6 +223,8 @@ static inline int power_domain_off(struct power_domain *power_domain)
 
 	return ret;
 }
+
+#endif
 
 /**
  * dev_power_domain_on - Enable power domains for a device .
