@@ -754,6 +754,14 @@ config VIDEO_LCD_SPI_MISO
 	option takes a string in the format understood by 'sunxi_name_to_gpio'
 	function, e.g. PH1 for pin 1 of port H.
 
+config VIDEO_AMOLED_DDIC_CH13726A
+    bool "DDIC_13726A DSI panel support"
+    depends on VIDEO
+    select VIDEO_MIPI_DSI
+    ---help---
+    Say Y here if you want to enable support for DDIC_13726A
+    1080x1240 DSI video mode panel.
+
 source "drivers/video/meson/Kconfig"
 
 config VIDEO_MVEBU
@@ -974,6 +982,11 @@ config VIDEO_DW_MIPI_DSI
 	  As this does not provide any functionality by itself (but
 	  rather requires a SoC-specific glue driver to call it), it
 	  can not be enabled from the configuration menu.
+
+config VIDEO_LINK
+    bool "Video pipeline linking support"
+    depends on VIDEO
+    default y
 
 config VIDEO_SIMPLE
 	bool "Simple display driver for preconfigured display"
