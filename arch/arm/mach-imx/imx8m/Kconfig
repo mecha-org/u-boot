@@ -427,6 +427,21 @@ config TARGET_LIBREM5
 	select SUPPORT_SPL
 	select IMX8M_LPDDR4
 
+config TARGET_MECHA_COMET
+	bool "Mecha Comet"
+	select IMX8MP
+	select SUPPORT_SPL
+	select IMX8M_LPDDR4
+	select FSL_CAAM
+	select ARCH_MISC_INIT
+	select SPL_CRYPTO if SPL
+	select CMD_REMOTEPROC
+	select REMOTEPROC_IMX
+	select REGMAP
+	select SYSCON
+	imply BOOTSTD_FULL
+	imply BOOTSTD_BOOTCOMMAND
+
 endchoice
 
 source "board/advantech/imx8mp_rsb3720a1/Kconfig"
@@ -442,6 +457,7 @@ source "board/dhelectronics/dh_imx8mp/Kconfig"
 source "board/emcraft/imx8mp_navqp/Kconfig"
 source "board/engicam/imx8mm/Kconfig"
 source "board/engicam/imx8mp/Kconfig"
+source "board/mecha/comet/Kconfig"
 source "board/nxp/imx8mq_evk/Kconfig"
 source "board/nxp/imx8mm_evk/Kconfig"
 source "board/nxp/imx8mn_evk/Kconfig"

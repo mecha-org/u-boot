@@ -1,0 +1,8 @@
+Mecha Comet
+M:	Advait Dhamorikar <advaitd@mechasystems.com>
+S:	Maintained
+F:	board/mecha/comet/
+F:	include/configs/comet.h
+F:	configs/imx8mp-mecha-comet-2gb_defconfig
+F:	configs/imx8mp-mecha-comet-4gb_defconfig
+F:	configs/imx8mp-mecha-comet-8gb_defconfig
