@@ -1210,7 +1210,9 @@ dtb-$(CONFIG_TARGET_CORSTONE1000) += corstone1000-mps3.dtb \
 
 dtb-$(CONFIG_TARGET_COREPRIMEVELTE) += pxa1908-samsung-coreprimevelte.dtb
 
-dtb-$(CONFIG_TARGET_MECHA_COMET) += imx8mp-mecha-comet-2gb.dtb
+dtb-$(CONFIG_TARGET_MECHA_COMET) += imx8mp-mecha-comet-2gb.dtb \
+				imx8mp-mecha-comet-4gb.dtb \
+				imx8mp-mecha-comet-8gb.dtb
 
 include $(srctree)/scripts/Makefile.dts
 
