@@ -32,6 +32,36 @@ struct efi_capsule_update_info update_info = {
 
 #include <clk.h>
 
+#ifdef CONFIG_OF_BOARD_SETUP
+
+int ft_board_setup(void *blob, struct bd_info *bd)
+{
+	int ret, node;
+	int banks = 1;
+	u64 base[CONFIG_NR_DRAM_BANKS];
+	u64 size[CONFIG_NR_DRAM_BANKS];
+
+	/* fixup DT for the two DDR banks */
+	base[0] = gd->bd->bi_dram[0].start;
+	size[0] = gd->bd->bi_dram[0].size;
+#ifndef CONFIG_IMX8M_LPDDR4_2GB
+	base[1] = gd->bd->bi_dram[1].start;
+	size[1] = gd->bd->bi_dram[1].size;
+	banks = 2;
+#endif
+
+	ret = fdt_fixup_memory_banks(blob, base, size, banks);
+
+	if (ret) {
+		printf("Failed to setup memory bank values on fdt.\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+#endif
+
 int board_init(void)
 {
     return 0;
@@ -44,5 +74,9 @@ int board_early_init_r(void)
 
 int board_late_init(void)
 {
-    return 0;
+	if (is_usb_boot()) {
+		env_set("bootcmd", "fastboot 0");
+		env_set("bootdelay", "0");
+	}
+	return 0;
 }
