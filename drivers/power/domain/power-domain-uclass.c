@@ -6,6 +6,7 @@
 #define LOG_CATEGORY UCLASS_POWER_DOMAIN
 
 #include <dm.h>
+#include <dm/device-internal.h>
 #include <log.h>
 #include <malloc.h>
 #include <power-domain.h>
