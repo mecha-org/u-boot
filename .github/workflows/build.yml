@@ -1,0 +1,91 @@
+name: Mecha U-Boot Build
+
+on:
+  push:
+    branches: [ "v2026.07-mecha" ]
+  pull_request:
+    branches: [ "v2026.07-mecha" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        variant: [2gb, 4gb, 8gb]
+    
+    steps:
+      - name: Checkout U-Boot
+        uses: actions/checkout@v4
+        with:
+          path: u-boot
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libgnutls28-dev \
+            bison \
+            flex \
+            libssl-dev \
+            device-tree-compiler \
+            python3-setuptools \
+            swig \
+            wget \
+            git \
+            efitools \
+            uuid-dev
+
+      - name: Download LPDDR4 Training Binaries
+        run: |
+          mkdir firmware-imx
+          cd firmware-imx
+          wget https://www.nxp.com/lgfiles/NMG/MAD/YOCTO/firmware-imx-8.26-d4c33ab.bin
+          chmod a+x firmware-imx-8.26-d4c33ab.bin
+          # Extract without interaction
+          ./firmware-imx-8.26-d4c33ab.bin --auto-accept
+          cd ..
+
+      - name: Build ARM Trusted Firmware (ATF)
+        run: |
+          git clone https://github.com/nxp-imx/imx-atf
+          cd imx-atf/
+          make PLAT=imx8mp bl31
+          cd ..
+
+      - name: Build U-Boot
+        working-directory: u-boot
+        run: |
+          make mecha-comet-imx8mp-${{ matrix.variant }}_defconfig
+          cp ../imx-atf/build/imx8mp/release/bl31.bin .
+          cp ../firmware-imx/firmware-imx-8.26-d4c33ab/firmware/ddr/synopsys/lpddr4_pmu_train_* .
+          make -j$(nproc)
+
+      - name: Build Boot Image (imx-mkimage)
+        run: |
+          git clone https://github.com/nxp-imx/imx-mkimage
+          cd imx-mkimage/
+          
+          # Copy files to iMX8M directory
+          cp ../u-boot/spl/u-boot-spl.bin iMX8M/
+          cp ../u-boot/u-boot-nodtb.bin iMX8M/
+          cp ../u-boot/arch/arm/dts/imx8mp-mecha-comet-${{ matrix.variant }}.dtb iMX8M/imx8mp-evk.dtb
+          cp ../u-boot/tools/mkimage iMX8M/mkimage_uboot
+          cp ../imx-atf/build/imx8mp/release/bl31.bin iMX8M/
+          cp ../firmware-imx/firmware-imx-8.26-d4c33ab/firmware/ddr/synopsys/lpddr4_pmu_train_* iMX8M/
+          
+          # Build
+          make SOC=iMX8MP flash_evk
+          cd ..
+
+      - name: Prepare Artifacts
+        run: |
+          mkdir -p output/${{ matrix.variant }}
+          cp imx-mkimage/iMX8M/flash.bin output/${{ matrix.variant }}/flash.bin
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mecha-comet-uboot-${{ matrix.variant }}
+          path: output/${{ matrix.variant }}/flash.bin
